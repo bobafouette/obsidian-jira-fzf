@@ -121,3 +121,14 @@ test('read-only: every call used GET', () => {
   ok(allCalls.length > 0);
   ok(allCalls.every((c) => c.method === 'GET'));
 });
+
+test('a 2xx with an unreadable body is an error', async () => {
+  const bad = { status: 200, get json() { throw new Error('not json'); } };
+  await rejects(new JiraClient(cfg, fakeRequest([bad])).myself(), (e) => e instanceof JiraError
+    && e.message === 'Unexpected response from Jira (check the site URL)' && e.status === 200);
+});
+
+test('non-2xx falls back to the errors object', async () => {
+  const req = fakeRequest([{ status: 400, json: { errorMessages: [], errors: { jql: 'Bad field' } } }]);
+  await rejects(new JiraClient(cfg, req).get('/x'), (e) => e.message === 'Bad field');
+});

@@ -18,6 +18,8 @@ test('normalizeSite', () => {
   eq(normalizeSite(''), '');
   eq(normalizeSite('   '), '');
   eq(normalizeSite('http://'), '');
+  eq(normalizeSite('http://x.atlassian.net'), 'https://x.atlassian.net');
+  eq(normalizeSite('HTTP://x.atlassian.net:8080/a'), 'https://x.atlassian.net:8080');
 });
 
 test('noteFileName', () => {
@@ -28,6 +30,20 @@ test('noteFileName', () => {
   for (const s of ['', '///', '...']) eq(noteFileName('IT-123', s, '-'), 'IT-123');
   const long = noteFileName('IT-123', 'word '.repeat(60), '-');
   ok(long.length <= 100 && !long.endsWith('-'));
+});
+
+test('noteFileName does not split a surrogate pair at the cut', () => {
+  for (const n of [90, 91, 92, 93, 94, 95]) {
+    const r = noteFileName('IT-1', 'x'.repeat(n) + '😀😀', ' ');
+    ok(!/[\ud800-\udbff]$/.test(r), r);
+    ok(r.length <= 100);
+  }
+});
+
+test('noteFileName sanitises the separator', () => {
+  eq(noteFileName('IT-1', 'a b', '/'), 'IT-1 a b');
+  eq(noteFileName('IT-1', 'a b', ':'), 'IT-1 a b');
+  eq(noteFileName('IT-1', 'a b', '_/'), 'IT-1_a_b');
 });
 
 test('keys and JQL', () => {
@@ -65,6 +81,7 @@ test('inlineLine', () => {
   eq(inlineLine(T, null), '- [IT-123 Fix the printer](https://x.atlassian.net/browse/IT-123) · In Progress');
   eq(inlineLine({ ...T, due: '2026-10-20' }, '[[IT-123-fix-the-printer]]'),
     '- [IT-123 Fix the printer](https://x.atlassian.net/browse/IT-123) · In Progress · due 2026-10-20 · [[IT-123-fix-the-printer]]');
+  ok(inlineLine({ ...T, summary: 'c \\' }, null).includes('c \\\\](')); 
   ok(inlineLine({ ...T, summary: 'Fix [prod] now' }, null).startsWith('- [IT-123 Fix \\[prod\\] now]('));
 });
 
@@ -78,5 +95,6 @@ test('templates', () => {
   eq(renderTemplate('{{key}}|{{summary}}|{{url}}|{{status}}|{{priority}}|{{due}}|{{other}}|{{constructor}}', T),
     'IT-123|Fix the printer|https://x.atlassian.net/browse/IT-123|In Progress|High||{{other}}|{{constructor}}');
   eq(stripFrontmatter('---\na: 1\n---\nbody\n'), 'body\n');
+  eq(stripFrontmatter('---\n---\n# {{key}}\n\n---\nfooter\n'), '# {{key}}\n\n---\nfooter\n');
   eq(defaultBody(T), '# IT-123 Fix the printer\n\n');
 });

@@ -109,6 +109,8 @@ function fakeEditor() {
       const lines = this.text.split('\n');
       this.cursor = { line: lines.length - 1, ch: lines[lines.length - 1].length };
     },
+    lineText: '',
+    getLine() { return this.lineText; },
     getCursor() { return this.cursor; },
     setCursor(pos) { this.cursor = pos; },
     focus() {},
@@ -311,6 +313,10 @@ test('insertInline writes the line, a child bullet and puts the cursor at the en
   const ed2 = fakeEditor();
   p.insertInline(ed2, { ...T, key: 'IT-9' });
   eq(ed2.text, `- [IT-9 Fix the printer](${T.url}) · In Progress\n\t- `);
+  const ed3 = fakeEditor();
+  ed3.lineText = '\t  ';
+  p.insertInline(ed3, { ...T, key: 'IT-9' });
+  eq(ed3.text, `- [IT-9 Fix the printer](${T.url}) · In Progress\n\t  \t- `);
 });
 
 test('refreshAll writes only changed values and marks missing tickets', async () => {
@@ -481,6 +487,9 @@ test('settings tab: site is normalised, token is a password, Test shows the user
   eq(token.components[0].inputEl.type, 'password');
   await token.components.find((c) => c.kind === 'button').clickHandler();
   deepEq(notices, ['Connected as Me']);
+  p.client = () => ({ myself: async () => '<html>' });
+  await token.components.find((c) => c.kind === 'button').clickHandler();
+  eq(notices[notices.length - 1], 'Unexpected response from Jira (check the site URL)');
   const toggle = byName('Log to daily note').components[0];
   eq(toggle.value, true);
   await toggle.changeHandler(false);

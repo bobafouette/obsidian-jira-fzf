@@ -17,14 +17,15 @@ function normalizeSite(s) {
   if (!raw) return '';
   try {
     const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : 'https://' + raw);
-    return u.origin === 'null' ? '' : u.origin;
+    return u.host ? 'https://' + u.host : '';
   } catch (e) {
     return '';
   }
 }
 
 function noteFileName(key, summary, sep) {
-  const s = sep && sep.trim() ? sep : ' ';
+  const clean = String(sep == null ? '' : sep).replace(NAME_FORBIDDEN, '');
+  const s = clean.trim() ? clean : ' ';
   const sepRe = escapeRegExp(s);
   const junk = '(?:[.\\s]|' + sepRe + ')';
   let part = String(summary || '').toLowerCase()
@@ -34,7 +35,14 @@ function noteFileName(key, summary, sep) {
     .replace(new RegExp(junk + '+$'), '');
   const k = String(key || '').toUpperCase();
   let name = part ? k + s + part : k;
-  if (name.length > NAME_MAX) name = name.slice(0, NAME_MAX);
+  if (name.length > NAME_MAX) {
+    let cut = '';
+    for (const ch of name) {
+      if (cut.length + ch.length > NAME_MAX) break;
+      cut += ch;
+    }
+    name = cut;
+  }
   return name.replace(new RegExp(junk + '+$'), '');
 }
 
@@ -111,7 +119,7 @@ function indexNotes(files, fmOf) {
 }
 
 function inlineLine(t, noteLink) {
-  const summary = String(t.summary).replace(/\s+/g, ' ').trim().replace(/[[\]]/g, '\\$&');
+  const summary = String(t.summary).replace(/\s+/g, ' ').trim().replace(/[\\[\]]/g, '\\$&');
   const parts = ['[' + t.key + ' ' + summary + '](' + t.url + ')'];
   if (t.status) parts.push(t.status);
   if (t.due) parts.push('due ' + t.due);
@@ -146,7 +154,7 @@ function renderTemplate(tpl, t) {
 }
 
 function stripFrontmatter(s) {
-  return String(s).replace(/^---\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/, '');
+  return String(s).replace(/^---\r?\n(?:[\s\S]*?\r?\n)??---[ \t]*(?:\r?\n|$)/, '');
 }
 
 function defaultBody(t) {
@@ -186,6 +194,8 @@ function authHeader(email, token) {
   for (const b of bytes) bin += String.fromCharCode(b);
   return 'Basic ' + btoa(bin);
 }
+
+const BAD_RESPONSE = 'Unexpected response from Jira (check the site URL)';
 
 class JiraError extends Error {
   constructor(message, status) {
@@ -242,13 +252,19 @@ class JiraClient {
       throw new JiraError("Can't reach Jira", 0);
     }
     const status = res && res.status;
-    if (status >= 200 && status < 300) return readJson(res);
+    if (status >= 200 && status < 300) {
+      const data = readJson(res);
+      if (data === undefined) throw new JiraError(BAD_RESPONSE, status);
+      return data;
+    }
     if (status === 401 || status === 403) {
       throw new JiraError('Jira rejected the credentials (check email and API token)', status);
     }
     const body = readJson(res);
     const msgs = body && Array.isArray(body.errorMessages) ? body.errorMessages : [];
-    throw new JiraError(msgs.length ? msgs.join('; ') : 'Jira returned HTTP ' + status, status);
+    const errs = body && body.errors && typeof body.errors === 'object' ? Object.values(body.errors) : [];
+    const detail = msgs.length ? msgs : errs;
+    throw new JiraError(detail.length ? detail.join('; ') : 'Jira returned HTTP ' + status, status);
   }
 
   search(jql, { maxResults = 100, cap = 500 } = {}) {
@@ -588,8 +604,9 @@ class TicketNoteBridge extends Plugin {
     const note = this.noteFor(t.key);
     const active = this.app.workspace.getActiveFile();
     const link = note ? this.app.fileManager.generateMarkdownLink(note, active ? active.path : '') : '';
-    const text = inlineLine(t, link) + '\n\t- ';
     const from = editor.getCursor('from');
+    const indent = (/^[ \t]*/.exec(editor.getLine(from.line) || '') || [''])[0];
+    const text = inlineLine(t, link) + '\n' + indent + '\t- ';
     editor.replaceSelection(text);
     const lines = text.split('\n');
     const last = lines[lines.length - 1];
@@ -672,7 +689,7 @@ class BridgeSettingTab extends PluginSettingTab {
         if (!client) return;
         try {
           const me = await client.myself();
-          new Notice('Connected as ' + ((me && me.displayName) || 'unknown user'));
+          new Notice(me && me.displayName ? 'Connected as ' + me.displayName : BAD_RESPONSE);
         } catch (e) {
           new Notice(errorMessage(e));
         }
