@@ -1,5 +1,8 @@
 'use strict';
-const { Plugin, requestUrl } = require('obsidian');
+const {
+  Plugin, PluginSettingTab, Setting, Notice, FuzzySuggestModal, SuggestModal, TFile,
+  normalizePath, moment, requestUrl,
+} = require('obsidian');
 
 const CATEGORY = { new: 'todo', indeterminate: 'in progress', done: 'done' };
 const NAME_FORBIDDEN = /[\\/:*?"<>|#^[\]]/g;
@@ -150,6 +153,30 @@ function defaultBody(t) {
   return '# ' + t.key + ' ' + t.summary + '\n\n';
 }
 
+// Path of the daily note for moment `m`, from the core Daily notes options.
+function dailyNotePath(options, m) {
+  const o = options || {};
+  const folder = String(o.folder || '').trim();
+  const name = m.format(o.format || 'YYYY-MM-DD');
+  return normalizePath((folder ? folder + '/' : '') + name + '.md');
+}
+
+// True if `needle` appears in the section under `heading` (up to the next
+// heading of the same or a higher level).
+function sectionContains(data, heading, needle) {
+  const lines = String(data).split('\n');
+  const want = heading.trim();
+  const start = lines.findIndex((l) => l.trim() === want);
+  if (start === -1) return false;
+  const level = (want.match(/^#+/) || [''])[0].length;
+  for (let i = start + 1; i < lines.length; i++) {
+    const m = lines[i].match(/^(#{1,6})\s/);
+    if (m && m[1].length <= level) break;
+    if (lines[i].includes(needle)) return true;
+  }
+  return false;
+}
+
 const FIELDS = 'summary,status,priority,duedate';
 const BATCH = 50;
 
@@ -274,14 +301,404 @@ async function fetchTickets(client, keys) {
   return { found, missing };
 }
 
-class TicketNoteBridge extends Plugin {
-  async onload() {}
+const DEFAULT_JQL = 'assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC';
+const DEFAULTS = {
+  site: '',
+  email: '',
+  token: '',
+  jql: DEFAULT_JQL,
+  folder: 'Tickets',
+  fileNameSeparator: '-',
+  template: '',
+  logToDaily: true,
+  dailyHeading: '## Tickets',
+  refreshOnStartup: true,
+};
+const MSG_CREDENTIALS = 'Set your Jira site, email and API token in settings';
+const MSG_NO_DAILY = "Today's daily note doesn't exist yet, so this wasn't logged.";
+const SEARCH_MIN = 2;
+const SEARCH_DELAY = 300;
+const SEARCH_HINT = 'Type at least 2 characters (a key like IT-123, or text)';
+
+function errorMessage(e) {
+  return (e && e.message) || String(e);
 }
 
+function ticketLabel(t, hasNote) {
+  return (hasNote ? '📝 ' : '') + t.key + ' ' + t.summary + (t.status ? ' · ' + t.status : '');
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Fuzzy picker over a fixed list of tickets (the "my tickets" JQL results).
+class TicketPicker extends FuzzySuggestModal {
+  constructor(app, tickets, hasNote, onChoose) {
+    super(app);
+    this.tickets = tickets;
+    this.hasNote = hasNote;
+    this.onChoose = onChoose;
+    this.emptyStateText = 'No tickets match your JQL';
+    this.setPlaceholder('Pick a ticket');
+  }
+
+  getItems() {
+    return this.tickets;
+  }
+
+  getItemText(t) {
+    return ticketLabel(t, this.hasNote(t.key));
+  }
+
+  onChooseItem(t) {
+    return this.onChoose(t);
+  }
+}
+
+// Picker that searches Jira as you type: debounced, latest query wins.
+class TicketSearchModal extends SuggestModal {
+  constructor(app, plugin, client, onChoose) {
+    super(app);
+    this.client = client;
+    this.onChoose = onChoose;
+    this.index = plugin.notesIndex();
+    this.delay = SEARCH_DELAY;
+    this.seq = 0;
+    this.current = Promise.resolve([]);
+    this.emptyStateText = SEARCH_HINT;
+    this.setPlaceholder('Search Jira: a key like IT-123, or text');
+  }
+
+  getSuggestions(query) {
+    const seq = ++this.seq;
+    const p = this.lookup(String(query).trim(), seq);
+    this.current = p;
+    return p;
+  }
+
+  // A superseded call resolves to the newest call's results.
+  async lookup(q, seq) {
+    if (q.length < SEARCH_MIN) {
+      this.emptyStateText = SEARCH_HINT;
+      return [];
+    }
+    await sleep(this.delay);
+    if (seq !== this.seq) return this.current;
+    let tickets;
+    let empty = 'No tickets found';
+    try {
+      if (isIssueKey(q)) {
+        const issue = await this.client.issue(q.toUpperCase());
+        tickets = issue ? [mapIssue(issue, this.client.site)] : [];
+      } else {
+        const issues = await this.client.search(textSearchJql(q), { maxResults: 20, cap: 20 });
+        tickets = issues.map((i) => mapIssue(i, this.client.site));
+      }
+    } catch (e) {
+      tickets = [];
+      empty = errorMessage(e);
+    }
+    if (seq !== this.seq) return this.current;
+    this.emptyStateText = empty;
+    return tickets;
+  }
+
+  renderSuggestion(t, el) {
+    el.setText(ticketLabel(t, this.index.has(String(t.key).toUpperCase())));
+  }
+
+  onChooseSuggestion(t) {
+    return this.onChoose(t);
+  }
+}
+
+class TicketNoteBridge extends Plugin {
+  async onload() {
+    await this.loadSettings();
+
+    this.addCommand({
+      id: 'open-ticket-note',
+      name: 'Open ticket note (my tickets)',
+      callback: () => this.pickMine((t) => this.openOrCreate(t)),
+    });
+    this.addCommand({
+      id: 'open-ticket-note-search',
+      name: 'Open ticket note (search)',
+      callback: () => this.pickSearch((t) => this.openOrCreate(t)),
+    });
+    this.addCommand({
+      id: 'insert-ticket-inline',
+      name: 'Insert ticket inline (my tickets)',
+      editorCallback: (editor) => this.pickMine((t) => this.insertInline(editor, t)),
+    });
+    this.addCommand({
+      id: 'insert-ticket-inline-search',
+      name: 'Insert ticket inline (search)',
+      editorCallback: (editor) => this.pickSearch((t) => this.insertInline(editor, t)),
+    });
+    this.addCommand({
+      id: 'open-ticket-in-jira',
+      name: "Open this note's ticket in Jira",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const fm = file && this.frontmatter(file);
+        const url = fm && fm.jira_url;
+        if (typeof url !== 'string' || !/^https?:\/\//i.test(url.trim())) return false;
+        if (!checking) window.open(url.trim());
+        return true;
+      },
+    });
+    this.addCommand({
+      id: 'refresh-ticket-notes',
+      name: 'Refresh all ticket notes from Jira',
+      callback: () => this.refreshAll(true),
+    });
+
+    this.addSettingTab(new BridgeSettingTab(this.app, this));
+
+    this.app.workspace.onLayoutReady(() => {
+      if (!this.settings.refreshOnStartup) return;
+      try {
+        this.refreshAll(false).catch(() => {});
+      } catch (e) {
+        // Startup refresh is silent on failure.
+      }
+    });
+  }
+
+  async loadSettings() {
+    this.settings = Object.assign({}, DEFAULTS, await this.loadData());
+  }
+
+  async saveSettings() {
+    await this.saveData(this.settings);
+  }
+
+  client(quiet = false) {
+    const s = this.settings;
+    const site = normalizeSite(s.site);
+    const email = String(s.email || '').trim();
+    const token = String(s.token || '').trim();
+    if (!site || !email || !token) {
+      if (!quiet) new Notice(MSG_CREDENTIALS);
+      return null;
+    }
+    return new JiraClient({ site, email, token });
+  }
+
+  frontmatter(file) {
+    const cache = this.app.metadataCache.getFileCache(file);
+    return cache && cache.frontmatter;
+  }
+
+  notesIndex() {
+    return indexNotes(this.app.vault.getMarkdownFiles(), (f) => this.frontmatter(f));
+  }
+
+  noteFor(key, index = this.notesIndex()) {
+    const files = index.get(String(key).toUpperCase());
+    return files && files.length ? files[0] : null;
+  }
+
+  // "My tickets": fetch the JQL results first, then open the picker.
+  async pickMine(action) {
+    const client = this.client();
+    if (!client) return;
+    let issues;
+    try {
+      issues = await client.search(this.settings.jql || DEFAULT_JQL);
+    } catch (e) {
+      new Notice(errorMessage(e));
+      return;
+    }
+    const tickets = issues.map((i) => mapIssue(i, client.site));
+    const index = this.notesIndex();
+    new TicketPicker(this.app, tickets, (key) => index.has(String(key).toUpperCase()), action).open();
+  }
+
+  pickSearch(action) {
+    const client = this.client();
+    if (!client) return;
+    new TicketSearchModal(this.app, this, client, action).open();
+  }
+
+  async openOrCreate(t) {
+    try {
+      let file = this.noteFor(t.key);
+      if (!file) {
+        file = await this.createNote(t);
+        try {
+          await this.logToDaily(file);
+        } catch (e) {
+          new Notice(errorMessage(e));
+        }
+      }
+      await this.app.workspace.getLeaf(false).openFile(file);
+    } catch (e) {
+      new Notice(errorMessage(e));
+    }
+  }
+
+  async createNote(t) {
+    const { vault, fileManager } = this.app;
+    const folder = normalizePath(String(this.settings.folder || '').trim());
+    if (folder && folder !== '/' && !vault.getAbstractFileByPath(folder)) await vault.createFolder(folder);
+    const prefix = folder && folder !== '/' ? folder + '/' : '';
+    const base = prefix + noteFileName(t.key, t.summary, this.settings.fileNameSeparator);
+    let path = normalizePath(base + '.md');
+    for (let n = 2; vault.getAbstractFileByPath(path); n++) path = normalizePath(base + ' ' + n + '.md');
+
+    let body = defaultBody(t);
+    const tplName = String(this.settings.template || '').trim();
+    if (tplName) {
+      const tplPath = normalizePath(/\.md$/i.test(tplName) ? tplName : tplName + '.md');
+      const tpl = vault.getAbstractFileByPath(tplPath);
+      if (tpl instanceof TFile) body = stripFrontmatter(renderTemplate(await vault.read(tpl), t));
+    }
+
+    const file = await vault.create(path, body);
+    await fileManager.processFrontMatter(file, (fm) => {
+      Object.assign(fm, noteProps(t), { created: moment().format('YYYY-MM-DD HH:mm') });
+    });
+    return file;
+  }
+
+  dailyNoteFile() {
+    const ip = this.app.internalPlugins;
+    const daily = ip && ip.getPluginById && ip.getPluginById('daily-notes');
+    const options = daily && daily.instance && daily.instance.options;
+    const file = this.app.vault.getAbstractFileByPath(dailyNotePath(options, moment()));
+    return file instanceof TFile ? file : null;
+  }
+
+  async logToDaily(file) {
+    if (!this.settings.logToDaily) return;
+    const daily = this.dailyNoteFile();
+    if (!daily) {
+      new Notice(MSG_NO_DAILY);
+      return;
+    }
+    const heading = String(this.settings.dailyHeading || '').trim() || DEFAULTS.dailyHeading;
+    const link = this.app.fileManager.generateMarkdownLink(file, daily.path);
+    const line = '- ' + moment().format('HH:mm') + ' ' + link;
+    await this.app.vault.process(daily, (data) =>
+      (sectionContains(data, heading, link) ? data : insertUnderHeading(data, heading, line)));
+  }
+
+  insertInline(editor, t) {
+    const note = this.noteFor(t.key);
+    const active = this.app.workspace.getActiveFile();
+    const link = note ? this.app.fileManager.generateMarkdownLink(note, active ? active.path : '') : '';
+    const text = inlineLine(t, link) + '\n\t- ';
+    const from = editor.getCursor('from');
+    editor.replaceSelection(text);
+    const lines = text.split('\n');
+    const last = lines[lines.length - 1];
+    editor.setCursor({ line: from.line + lines.length - 1, ch: (lines.length === 1 ? from.ch : 0) + last.length });
+    if (typeof editor.focus === 'function') editor.focus();
+  }
+
+  async refreshAll(verbose) {
+    const client = this.client(!verbose);
+    if (!client) return;
+    const index = this.notesIndex();
+    if (!index.size) {
+      if (verbose) new Notice('No ticket notes to refresh');
+      return;
+    }
+    let result;
+    try {
+      result = await fetchTickets(client, [...index.keys()]);
+    } catch (e) {
+      if (verbose) new Notice(errorMessage(e));
+      return;
+    }
+    let total = 0;
+    let changed = 0;
+    const apply = async (key, props) => {
+      for (const file of index.get(key) || []) {
+        total++;
+        const diff = propsDiff(this.frontmatter(file), props);
+        if (!Object.keys(diff).length) continue;
+        try {
+          await this.app.fileManager.processFrontMatter(file, (fm) => { Object.assign(fm, diff); });
+          changed++;
+        } catch (e) {
+          if (verbose) new Notice(file.path + ': ' + errorMessage(e));
+        }
+      }
+    };
+    for (const [key, issue] of result.found) await apply(key, noteProps(mapIssue(issue, client.site)));
+    for (const key of result.missing) await apply(key, { jira_status: 'missing' });
+    if (verbose) new Notice('Refreshed ' + total + ' ticket notes (' + changed + ' changed)');
+  }
+}
+
+class BridgeSettingTab extends PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+
+  display() {
+    const { containerEl } = this;
+    const plugin = this.plugin;
+    const s = plugin.settings;
+    const save = () => plugin.saveSettings();
+    containerEl.empty();
+
+    const text = (name, desc, key, placeholder, transform = (v) => v) =>
+      new Setting(containerEl).setName(name).setDesc(desc).addText((t) => t
+        .setPlaceholder(placeholder)
+        .setValue(s[key])
+        .onChange(async (v) => { s[key] = transform(v); await save(); }));
+    const toggle = (name, desc, key) =>
+      new Setting(containerEl).setName(name).setDesc(desc).addToggle((t) => t
+        .setValue(s[key])
+        .onChange(async (v) => { s[key] = v; await save(); }));
+
+    text('Site URL', 'Your Jira Cloud site.', 'site', 'https://yoursite.atlassian.net', normalizeSite);
+    text('Email', 'The email of your Atlassian account.', 'email', 'you@example.com', (v) => v.trim());
+    new Setting(containerEl)
+      .setName('API token')
+      .setDesc('A classic Atlassian API token. Stored in plain text in this plugin\'s data.json.')
+      .addText((t) => {
+        t.inputEl.type = 'password';
+        t.setPlaceholder('API token')
+          .setValue(s.token)
+          .onChange(async (v) => { s.token = v.trim(); await save(); });
+      })
+      .addButton((b) => b.setButtonText('Test').onClick(async () => {
+        const client = plugin.client();
+        if (!client) return;
+        try {
+          const me = await client.myself();
+          new Notice('Connected as ' + ((me && me.displayName) || 'unknown user'));
+        } catch (e) {
+          new Notice(errorMessage(e));
+        }
+      }));
+    new Setting(containerEl)
+      .setName('JQL for "my tickets"')
+      .setDesc('Tickets listed by the "my tickets" pickers.')
+      .addTextArea((t) => t
+        .setPlaceholder(DEFAULT_JQL)
+        .setValue(s.jql)
+        .onChange(async (v) => { s.jql = v; await save(); }));
+    text('Folder', 'Where new ticket notes are created.', 'folder', 'Tickets');
+    text('File name separator', 'Replaces spaces and forbidden characters in file names. Empty keeps spaces.',
+      'fileNameSeparator', '-');
+    text('Template', 'Optional template note. Placeholders: {{key}} {{summary}} {{url}} {{status}} {{priority}} {{due}}.',
+      'template', 'Templates/Ticket');
+    toggle('Log to daily note', 'Log newly created ticket notes in today\'s daily note.', 'logToDaily');
+    text('Daily note heading', 'Heading the log line goes under.', 'dailyHeading', '## Tickets');
+    toggle('Refresh on startup', 'Refresh all ticket notes from Jira when Obsidian starts.', 'refreshOnStartup');
+  }
+}
 TicketNoteBridge._test = {
   CATEGORY, normalizeSite, noteFileName, isIssueKey, escapeJqlString, textSearchJql, keysJql, chunk,
   mapIssue, noteProps, propsDiff, indexNotes, inlineLine, insertUnderHeading,
-  renderTemplate, stripFrontmatter, defaultBody,
+  renderTemplate, stripFrontmatter, defaultBody, dailyNotePath, sectionContains,
   FIELDS, authHeader, JiraError, paginate, JiraClient, fetchTickets,
+  DEFAULTS, TicketPicker, TicketSearchModal, BridgeSettingTab,
 };
 module.exports = TicketNoteBridge;

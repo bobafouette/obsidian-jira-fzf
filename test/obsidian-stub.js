@@ -12,20 +12,44 @@ class Plugin {
 }
 
 class PluginSettingTab {
-  constructor(app, plugin) { this.app = app; this.plugin = plugin; this.containerEl = {}; }
+  constructor(app, plugin) {
+    this.app = app; this.plugin = plugin;
+    this.containerEl = { settings: [], empty() { this.settings = []; } };
+  }
 }
 
+// A fake input component: records its value and change handler.
+class Component {
+  constructor(kind) { this.kind = kind; this.inputEl = {}; this.value = undefined; }
+  setPlaceholder(p) { this.placeholder = p; return this; }
+  setValue(v) { this.value = v; return this; }
+  onChange(fn) { this.changeHandler = fn; return this; }
+  setButtonText(t) { this.text = t; return this; }
+  onClick(fn) { this.clickHandler = fn; return this; }
+}
+
+// Settings register themselves on containerEl.settings so tests can drive them.
 class Setting {
-  constructor() {}
-  setName() { return this; }
-  setDesc() { return this; }
-  addText() { return this; }
-  addTextArea() { return this; }
-  addToggle() { return this; }
-  addButton() { return this; }
+  constructor(containerEl) {
+    this.components = [];
+    if (containerEl && Array.isArray(containerEl.settings)) containerEl.settings.push(this);
+  }
+  setName(n) { this.name = n; return this; }
+  setDesc(d) { this.desc = d; return this; }
+  add(kind, cb) { const c = new Component(kind); this.components.push(c); if (cb) cb(c); return this; }
+  addText(cb) { return this.add('text', cb); }
+  addTextArea(cb) { return this.add('textarea', cb); }
+  addToggle(cb) { return this.add('toggle', cb); }
+  addButton(cb) { return this.add('button', cb); }
 }
 
-class Notice { constructor(message) { this.message = message; } }
+// Pushes every message to Notice.log when a test sets it to an array.
+class Notice {
+  constructor(message) {
+    this.message = message;
+    if (Array.isArray(Notice.log)) Notice.log.push(message);
+  }
+}
 
 class Modal {
   constructor(app) { this.app = app; this.contentEl = {}; }
@@ -34,11 +58,11 @@ class Modal {
 }
 
 class FuzzySuggestModal extends Modal {
-  setPlaceholder() {}
+  setPlaceholder(p) { this.placeholder = p; }
 }
 
 class SuggestModal extends Modal {
-  setPlaceholder() {}
+  setPlaceholder(p) { this.placeholder = p; }
 }
 
 class MarkdownView {}
