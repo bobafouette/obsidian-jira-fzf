@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+  # Publishing a release from the GitHub web page (which creates the tag too).
+  release:
+    types: [published]
+
+# Creating a release in the web page can fire both events; run them one at a
+# time so the second one only re-uploads the same files.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The tag is the source of truth: write it into manifest.json and
+      # versions.json so the published manifest always matches the release,
+      # even when nobody ran scripts/bump-version.js before tagging.
+      - name: Set manifest.json and versions.json to the tag version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const tag = process.env.TAG;
+            const parse = (v) => (/^(\d+)\.(\d+)\.(\d+)$/.exec(v) || []).slice(1).map(Number);
+            const t = parse(tag);
+            if (t.length !== 3) {
+              console.error(`Tag ${tag} is not X.Y.Z (no "v" prefix)`);
+              process.exit(1);
+            }
+            const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+            const versions = JSON.parse(fs.readFileSync("versions.json", "utf8"));
+            const m = parse(manifest.version);
+            const cmp = t.map((n, i) => n - m[i]).find((d) => d !== 0) || 0;
+            if (cmp < 0) {
+              console.error(`Tag ${tag} is lower than manifest.json version ${manifest.version}`);
+              process.exit(1);
+            }
+            manifest.version = tag;
+            versions[tag] = manifest.minAppVersion;
+            fs.writeFileSync("manifest.json", JSON.stringify(manifest, null, 2) + "\n");
+            fs.writeFileSync("versions.json", JSON.stringify(versions, null, 2) + "\n");
+            console.log(`manifest.json version set to ${tag} (minAppVersion ${manifest.minAppVersion})`);
+          '
+
+      - name: Repo checks
+        run: node scripts/check.js
+
+      - name: Tests
+        run: node --test 'test/*.test.js'
+
+      - name: Create the release or attach the files to it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" main.js manifest.json styles.css --clobber
+          else
+            gh release create "$TAG" main.js manifest.json styles.css --title "$TAG" --generate-notes
+          fi
