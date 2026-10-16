@@ -1,5 +1,5 @@
 'use strict';
-const { Plugin } = require('obsidian');
+const { Plugin, requestUrl } = require('obsidian');
 
 const CATEGORY = { new: 'todo', indeterminate: 'in progress', done: 'done' };
 const NAME_FORBIDDEN = /[\\/:*?"<>|#^[\]]/g;
@@ -150,6 +150,124 @@ function defaultBody(t) {
   return '# ' + t.key + ' ' + t.summary + '\n\n';
 }
 
+const FIELDS = 'summary,status,priority,duedate';
+const BATCH = 50;
+
+function authHeader(email, token) {
+  const bytes = new TextEncoder().encode(email + ':' + token);
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return 'Basic ' + btoa(bin);
+}
+
+class JiraError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.name = 'JiraError';
+    this.status = status;
+  }
+}
+
+async function paginate(fetchPage, cap = 500) {
+  const out = [];
+  let token;
+  for (;;) {
+    const page = await fetchPage(token);
+    out.push(...((page && page.issues) || []));
+    if (out.length >= cap) return out.slice(0, cap);
+    if (!page || page.isLast || !page.nextPageToken) return out;
+    token = page.nextPageToken;
+  }
+}
+
+function readJson(res) {
+  try {
+    return res.json;
+  } catch (e) {
+    return undefined;
+  }
+}
+
+class JiraClient {
+  constructor({ site, email, token }, request = requestUrl) {
+    this.site = normalizeSite(site);
+    this.email = email;
+    this.token = token;
+    this.request = request;
+  }
+
+  async get(path, params) {
+    let url = this.site + '/rest/api/3' + path;
+    if (params) {
+      const qs = new URLSearchParams();
+      for (const [k, v] of Object.entries(params)) if (v !== undefined) qs.set(k, String(v));
+      url += (path.includes('?') ? '&' : '?') + qs.toString();
+    }
+    let res;
+    try {
+      res = await this.request({
+        url,
+        method: 'GET',
+        headers: { Authorization: authHeader(this.email, this.token), Accept: 'application/json' },
+        throw: false,
+      });
+    } catch (e) {
+      throw new JiraError("Can't reach Jira", 0);
+    }
+    const status = res && res.status;
+    if (status >= 200 && status < 300) return readJson(res);
+    if (status === 401 || status === 403) {
+      throw new JiraError('Jira rejected the credentials (check email and API token)', status);
+    }
+    const body = readJson(res);
+    const msgs = body && Array.isArray(body.errorMessages) ? body.errorMessages : [];
+    throw new JiraError(msgs.length ? msgs.join('; ') : 'Jira returned HTTP ' + status, status);
+  }
+
+  search(jql, { maxResults = 100, cap = 500 } = {}) {
+    return paginate((nextPageToken) => this.get('/search/jql', {
+      jql, fields: FIELDS, maxResults, nextPageToken,
+    }), cap);
+  }
+
+  async issue(key) {
+    try {
+      return await this.get('/issue/' + encodeURIComponent(key), { fields: FIELDS });
+    } catch (e) {
+      if (e instanceof JiraError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
+  myself() {
+    return this.get('/myself');
+  }
+}
+
+async function fetchTickets(client, keys) {
+  const found = new Map();
+  const missing = new Set();
+  const wanted = [...new Set(keys.filter(isIssueKey).map((k) => k.toUpperCase()))];
+  for (const batch of chunk(wanted, BATCH)) {
+    let issues;
+    try {
+      issues = await client.search(keysJql(batch), { maxResults: 100 });
+    } catch (e) {
+      if (!(e instanceof JiraError) || e.status !== 400) throw e;
+      for (const k of batch) {
+        const issue = await client.issue(k);
+        if (issue) found.set(k, issue); else missing.add(k);
+      }
+      continue;
+    }
+    const byKey = new Map(issues.map((i) => [String(i.key).toUpperCase(), i]));
+    for (const k of batch) {
+      if (byKey.has(k)) found.set(k, byKey.get(k)); else missing.add(k);
+    }
+  }
+  return { found, missing };
+}
+
 class TicketNoteBridge extends Plugin {
   async onload() {}
 }
@@ -158,5 +276,6 @@ TicketNoteBridge._test = {
   CATEGORY, normalizeSite, noteFileName, isIssueKey, escapeJqlString, textSearchJql, keysJql, chunk,
   mapIssue, noteProps, propsDiff, indexNotes, inlineLine, insertUnderHeading,
   renderTemplate, stripFrontmatter, defaultBody,
+  FIELDS, authHeader, JiraError, paginate, JiraClient, fetchTickets,
 };
 module.exports = TicketNoteBridge;
