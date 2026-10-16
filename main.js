@@ -248,22 +248,28 @@ async function fetchTickets(client, keys) {
   const found = new Map();
   const missing = new Set();
   const wanted = [...new Set(keys.filter(isIssueKey).map((k) => k.toUpperCase()))];
+  const lookup = async (list) => {
+    for (const k of list) {
+      const issue = await client.issue(k);
+      if (issue) found.set(k, issue); else missing.add(k);
+    }
+  };
   for (const batch of chunk(wanted, BATCH)) {
     let issues;
     try {
       issues = await client.search(keysJql(batch), { maxResults: 100 });
     } catch (e) {
       if (!(e instanceof JiraError) || e.status !== 400) throw e;
-      for (const k of batch) {
-        const issue = await client.issue(k);
-        if (issue) found.set(k, issue); else missing.add(k);
-      }
+      await lookup(batch);
       continue;
     }
     const byKey = new Map(issues.map((i) => [String(i.key).toUpperCase(), i]));
+    const absent = [];
     for (const k of batch) {
-      if (byKey.has(k)) found.set(k, byKey.get(k)); else missing.add(k);
+      if (byKey.has(k)) found.set(k, byKey.get(k)); else absent.push(k);
     }
+    // A moved ticket comes back under its new key; resolve by the requested key.
+    await lookup(absent);
   }
   return { found, missing };
 }

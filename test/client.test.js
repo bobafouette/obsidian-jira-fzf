@@ -107,6 +107,16 @@ test('fetchTickets sanitises input and rethrows other errors', async () => {
   await rejects(fetchTickets(boom, ['IT-1']), (e) => e.status === 500);
 });
 
+test('fetchTickets resolves a moved ticket found by batch search', async () => {
+  const c = {
+    async search() { return [{ key: 'OPS-7' }]; },
+    async issue(k) { return k === 'IT-2' ? { key: 'OPS-7' } : null; },
+  };
+  const r = await fetchTickets(c, ['IT-2']);
+  eq(r.found.get('IT-2').key, 'OPS-7');
+  eq(r.missing.size, 0);
+});
+
 test('read-only: every call used GET', () => {
   ok(allCalls.length > 0);
   ok(allCalls.every((c) => c.method === 'GET'));
