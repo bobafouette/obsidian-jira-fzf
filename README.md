@@ -2,6 +2,8 @@
 
 Jira holds the ticket. Obsidian holds the thinking. Read-only: this plugin never writes to Jira.
 
+![Fuzzy-finding a ticket and opening its note](assets/fzf.gif)
+
 Pick a Jira Cloud ticket from inside Obsidian and either open it as a note (created on demand) or drop a one-line link to it into whatever you are writing. Ticket notes keep their Jira facts (status, priority, due date) up to date; everything else in the note is yours.
 
 ## Install
