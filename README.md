@@ -26,7 +26,7 @@ Other settings: the JQL for "my tickets" (default `assignee = currentUser() AND 
 |---|---|
 | Open ticket note (my tickets) | Picker over your JQL results. A note marker shows which tickets already have a note. Opens the note, or creates it and logs it in today's daily note. |
 | Open ticket note (search) | Same, but the picker searches Jira as you type (2+ characters, a key like `IT-123` or free text). |
-| Insert ticket inline (my tickets) | Inserts `- [KEY Summary](url) · Status · due date · [[note]]` at the cursor, plus an indented child bullet. The due date and the note link appear only when they exist. |
+| Insert ticket inline (my tickets) | Inserts `[KEY Summary](url) · Status · due date · [[note]]` at the cursor, with no list marker or extra lines. The due date and the note link appear only when they exist. |
 | Insert ticket inline (search) | Same, with search. |
 | Open this note's ticket in Jira | Opens the active note's `jira_url`. Available only on notes whose `jira_url` is an http(s) link. |
 | Refresh all ticket notes from Jira | Updates the properties of every note that has `jira_key`. Also runs on startup. |

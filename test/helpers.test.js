@@ -78,11 +78,11 @@ test('indexNotes', () => {
 });
 
 test('inlineLine', () => {
-  eq(inlineLine(T, null), '- [IT-123 Fix the printer](https://x.atlassian.net/browse/IT-123) · In Progress');
+  eq(inlineLine(T, null), '[IT-123 Fix the printer](https://x.atlassian.net/browse/IT-123) · In Progress');
   eq(inlineLine({ ...T, due: '2026-10-20' }, '[[IT-123-fix-the-printer]]'),
-    '- [IT-123 Fix the printer](https://x.atlassian.net/browse/IT-123) · In Progress · due 2026-10-20 · [[IT-123-fix-the-printer]]');
+    '[IT-123 Fix the printer](https://x.atlassian.net/browse/IT-123) · In Progress · due 2026-10-20 · [[IT-123-fix-the-printer]]');
   ok(inlineLine({ ...T, summary: 'c \\' }, null).includes('c \\\\](')); 
-  ok(inlineLine({ ...T, summary: 'Fix [prod] now' }, null).startsWith('- [IT-123 Fix \\[prod\\] now]('));
+  ok(inlineLine({ ...T, summary: 'Fix [prod] now' }, null).startsWith('[IT-123 Fix \\[prod\\] now]('));
 });
 
 test('insertUnderHeading', () => {
