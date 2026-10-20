@@ -303,20 +303,18 @@ test('logToDaily notices a missing daily note and respects the toggle', async ()
   eq(notices.length, 1);
 });
 
-test('insertInline writes the line, a child bullet and puts the cursor at the end', async () => {
+test('insertInline inserts only the link text at the cursor', async () => {
   const p = await plugin({ files: { 'Tickets/IT-123-x.md': '', 'Daily/d.md': '' }, fm: { 'Tickets/IT-123-x.md': { jira_key: 'IT-123' } } });
   p.app.workspace.active = p.app.store.files.get('Daily/d.md');
   const ed = fakeEditor();
   p.insertInline(ed, { ...T, due: '2026-10-20' });
-  eq(ed.text, `- [IT-123 Fix the printer](${T.url}) · In Progress · due 2026-10-20 · [[IT-123-x]]\n\t- `);
-  deepEq(ed.cursor, { line: 1, ch: 3 });
+  const line = `[IT-123 Fix the printer](${T.url}) · In Progress · due 2026-10-20 · [[IT-123-x]]`;
+  eq(ed.text, line);
+  deepEq(ed.cursor, { line: 0, ch: line.length });
   const ed2 = fakeEditor();
+  ed2.lineText = '\t  ';
   p.insertInline(ed2, { ...T, key: 'IT-9' });
-  eq(ed2.text, `- [IT-9 Fix the printer](${T.url}) · In Progress\n\t- `);
-  const ed3 = fakeEditor();
-  ed3.lineText = '\t  ';
-  p.insertInline(ed3, { ...T, key: 'IT-9' });
-  eq(ed3.text, `- [IT-9 Fix the printer](${T.url}) · In Progress\n\t  \t- `);
+  eq(ed2.text, `[IT-9 Fix the printer](${T.url}) · In Progress`);
 });
 
 test('refreshAll writes only changed values and marks missing tickets', async () => {
@@ -402,7 +400,7 @@ test('insert-ticket-inline inserts into the editor captured at command time', as
   const ed = fakeEditor();
   const picker = await capture(TicketPicker, () => p.commands.find((x) => x.id === 'insert-ticket-inline').editorCallback(ed, {}));
   await picker.onChooseItem(T);
-  ok(ed.text.startsWith('- [IT-123 Fix the printer]'));
+  ok(ed.text.startsWith('[IT-123 Fix the printer]'));
 });
 
 test('open-ticket-in-jira is available only when the note has jira_url', async () => {
@@ -468,7 +466,7 @@ test('search commands need credentials and the choice inserts inline', async () 
   const ed = fakeEditor();
   const modal = await capture(TicketSearchModal, () => p.commands.find((x) => x.id === 'insert-ticket-inline-search').editorCallback(ed, {}));
   await modal.onChooseSuggestion(T);
-  ok(ed.text.startsWith('- [IT-123 Fix the printer]'));
+  ok(ed.text.startsWith('[IT-123 Fix the printer]'));
 });
 
 test('settings tab: site is normalised, token is a password, Test shows the user', async () => {

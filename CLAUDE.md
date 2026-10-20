@@ -17,8 +17,8 @@ dedicated note when it needs thought, with the ticket's facts kept current.
   `<folder>/<KEY>-<sanitized lower-case summary>.md` with frontmatter `jira_key`, `jira_url`,
   `jira_summary`, `jira_status`, `jira_status_category`, `jira_priority`, `due`, `created`.
   On creation only, logs `- HH:mm [[note]]` under a heading in today's daily note (once per note).
-- **Insert ticket inline** (my tickets / search): `- [KEY summary](url) · status · due … · [[note]]`
-  plus an indented child bullet.
+- **Insert ticket inline** (my tickets / search): `[KEY summary](url) · status · due … · [[note]]`
+  at the cursor, as plain text (no list marker, no child bullet).
 - **Open this note's ticket in Jira**.
 - **Refresh all ticket notes**: also on startup (silent). Writes only when values change.
   Missing tickets get `jira_status: missing`; moved tickets get the new key and URL.

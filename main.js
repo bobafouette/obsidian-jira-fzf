@@ -124,7 +124,7 @@ function inlineLine(t, noteLink) {
   if (t.status) parts.push(t.status);
   if (t.due) parts.push('due ' + t.due);
   if (noteLink) parts.push(noteLink);
-  return '- ' + parts.join(' · ');
+  return parts.join(' · ');
 }
 
 function insertUnderHeading(data, heading, line) {
@@ -604,13 +604,7 @@ class TicketNoteBridge extends Plugin {
     const note = this.noteFor(t.key);
     const active = this.app.workspace.getActiveFile();
     const link = note ? this.app.fileManager.generateMarkdownLink(note, active ? active.path : '') : '';
-    const from = editor.getCursor('from');
-    const indent = (/^[ \t]*/.exec(editor.getLine(from.line) || '') || [''])[0];
-    const text = inlineLine(t, link) + '\n' + indent + '\t- ';
-    editor.replaceSelection(text);
-    const lines = text.split('\n');
-    const last = lines[lines.length - 1];
-    editor.setCursor({ line: from.line + lines.length - 1, ch: (lines.length === 1 ? from.ch : 0) + last.length });
+    editor.replaceSelection(inlineLine(t, link));
     if (typeof editor.focus === 'function') editor.focus();
   }
 
