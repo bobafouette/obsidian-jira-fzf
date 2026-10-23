@@ -61,7 +61,7 @@ started from `bobafouette/obsidian-fzf-template`, whose `GUIDELINES.md` sets the
 - Pure helpers and `JiraClient` are unit-tested with a stubbed `obsidian` module
   (`test/`): `node --test 'test/*.test.js'` (Node built-ins only).
 - `node scripts/check.js`: syntax, mobile safety, read-only check (`READ_ONLY = true`),
-  manifest/versions.json consistency, secrets (Jira tokens, personal emails).
+  manifest/versions.json consistency, secrets (Jira tokens).
 - CI (`.github/workflows/ci.yml`) runs both on push and PR.
 - Pushing a tag `X.Y.Z` (no `v`) or publishing a GitHub release runs `release.yml`, which writes
   the version into manifest.json/versions.json and attaches main.js, manifest.json, styles.css

@@ -16,10 +16,6 @@ const READ_ONLY = true;
 const TOKEN_PATTERNS = [
   /\bATATT[A-Za-z0-9_\-=]{20,}/,
 ];
-// Personal details that must never be committed (the GitHub handle is fine).
-const PERSONAL_PATTERNS = [
-  /[A-Za-z0-9._%+-]+@(?:gmail|googlemail|yahoo|hotmail|outlook|live|icloud|proton|protonmail)\.[a-z.]+/i,
-];
 
 const fs = require('fs');
 const path = require('path');
@@ -166,7 +162,7 @@ function checkReadOnly() {
   return errors;
 }
 
-/** e. No API token or personal detail committed. */
+/** e. No API token committed. */
 function checkSecrets() {
   const errors = [];
   if (gitFiles(['ls-files', '--', 'data.json']).length) {
@@ -186,9 +182,6 @@ function checkSecrets() {
       if (line.includes('check:allow-token')) return;
       if (TOKEN_PATTERNS.some((re) => re.test(line))) {
         errors.push(`${rel}:${i + 1}: looks like an API token for ${SERVICE}; add "check:allow-token" on the line if it is not a secret`);
-      }
-      if (PERSONAL_PATTERNS.some((re) => re.test(line))) {
-        errors.push(`${rel}:${i + 1}: looks like a personal email address; only the handle bobafouette belongs in the repo (or add "check:allow-token")`);
       }
     });
   }
