@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const stub = require('./obsidian-stub');
 const {
-  TicketNoteBridge, TicketPicker, TicketSearchModal, BridgeSettingTab, DEFAULTS, JiraError,
+  TicketNoteBridge, TicketPicker, TicketSearchModal, BridgeSettingTab, DEFAULTS, JiraError, PLUGIN_NAME,
   dailyNotePath, sectionContains,
 } = require('./load-plugin');
 
@@ -12,6 +12,11 @@ const deepEq = assert.deepEqual;
 const ok = assert.ok;
 
 const manifest = { id: 'ticket-note-bridge' };
+const DEFAULT_JQL = 'assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC';
+const P = PLUGIN_NAME + ': ';
+
+// fail() also logs to the console; keep test output clean.
+console.error = () => {};
 const SITE = 'https://x.atlassian.net';
 const CREDS = { site: SITE, email: 'me@example.com', token: 'tok' };
 
@@ -58,8 +63,22 @@ function fakeApp({ files = {}, fm = {}, folders = [], daily = { folder: 'Daily',
       process: async (f, fn) => { const out = fn(store.data.get(f.path)); store.data.set(f.path, out); return out; },
     },
     fileManager: {
+      // Like Obsidian: a file's own frontmatter is parsed first (flat `key: value`
+      // lines; a value containing ": " is a YAML error), then lives in store.fm.
       processFrontMatter: async (f, fn) => {
-        if (!store.fm.has(f.path)) store.fm.set(f.path, {});
+        if (!store.fm.has(f.path)) {
+          const m = /^---\n([\s\S]*?)\n?---\n/.exec(store.data.get(f.path) || '');
+          const fm = {};
+          if (m) {
+            for (const line of m[1].split('\n').filter(Boolean)) {
+              const i = line.indexOf(': ');
+              if (i < 0 || line.slice(i + 2).includes(': ')) throw new Error('YAML parse error');
+              fm[line.slice(0, i)] = line.slice(i + 2);
+            }
+            store.data.set(f.path, store.data.get(f.path).slice(m[0].length));
+          }
+          store.fm.set(f.path, fm);
+        }
         fn(store.fm.get(f.path));
         store.log.push('fm ' + f.path);
       },
@@ -137,6 +156,36 @@ test('registers the six commands with the agreed ids', async () => {
   await p.onload();
   deepEq(p.commands.map((c) => c.id).sort(), ['insert-ticket-inline', 'insert-ticket-inline-search',
     'open-ticket-in-jira', 'open-ticket-note', 'open-ticket-note-search', 'refresh-ticket-notes']);
+});
+
+test('adds a ribbon icon that opens the "my tickets" picker', async () => {
+  const p = await plugin({}, CREDS);
+  eq(p.ribbon.length, 1);
+  eq(p.ribbon[0].icon, 'ticket');
+  eq(p.ribbon[0].title, 'Open ticket note (my tickets)');
+  const c = fakeClient({ search: () => [issue('IT-123')] });
+  p.client = () => c;
+  const picker = await capture(TicketPicker, () => p.ribbon[0].callback());
+  deepEq(c.calls, [['search', DEFAULT_JQL, undefined]]);
+  await picker.onChooseItem(T);
+  deepEq(p.app.store.opened, ['Tickets/IT-123-fix-the-printer.md']);
+});
+
+test('fail() logs to the console and shows a prefixed notice', async () => {
+  const notices = captureNotices();
+  stub.Notice.all = [];
+  const p = await plugin();
+  const logged = [];
+  const orig = console.error;
+  console.error = (...a) => logged.push(a);
+  try {
+    const err = new Error('boom');
+    p.fail(err);
+    deepEq(logged, [['[Jira fzf]', err]]);
+  } finally { console.error = orig; }
+  deepEq(notices, ['Jira fzf: boom']);
+  eq(stub.Notice.all[0].timeout, 8000);
+  stub.Notice.all = undefined;
 });
 
 test('settings default to the spec values', async () => {
@@ -234,14 +283,14 @@ test('openOrCreate shows vault errors as a notice', async () => {
   const p = await plugin();
   p.app.vault.create = async () => { throw new Error('disk full'); };
   await p.openOrCreate(T);
-  deepEq(notices, ['disk full']);
+  deepEq(notices, [P + 'disk full']);
   deepEq(p.app.store.opened, []);
 });
 
-test('createNote appends " 2", " 3" on collisions and keeps an existing folder', async () => {
-  const p = await plugin({ folders: ['Tickets'], files: { 'Tickets/IT-123-fix-the-printer.md': 'other', 'Tickets/IT-123-fix-the-printer 2.md': 'other' } });
+test('createNote appends "-2", "-3" on collisions and keeps an existing folder', async () => {
+  const p = await plugin({ folders: ['Tickets'], files: { 'Tickets/IT-123-fix-the-printer.md': 'other', 'Tickets/IT-123-fix-the-printer-2.md': 'other' } });
   const f = await p.createNote(T);
-  eq(f.path, 'Tickets/IT-123-fix-the-printer 3.md');
+  eq(f.path, 'Tickets/IT-123-fix-the-printer-3.md');
   ok(!p.app.store.log.some((l) => l.startsWith('createFolder')));
 });
 
@@ -252,19 +301,37 @@ test('createNote uses the separator setting and an empty folder means vault root
   ok(!p.app.store.log.some((l) => l.startsWith('createFolder')));
 });
 
-test('createNote renders the template without its frontmatter', async () => {
-  const p = await plugin({ files: { 'Templates/Ticket.md': '---\ntags: x\n---\n# {{key}}: {{summary}}\n{{url}} {{nope}}\n' } }, { template: 'Templates/Ticket' });
+test('createNote merges the template frontmatter with the plugin keys', async () => {
+  const tpl = '---\ntags: ticket\njira_status: placeholder\ntopic: {{key}}\n---\n# {{key}}: {{summary}}\n{{url}} {{nope}}\n';
+  const p = await plugin({ files: { 'Templates/Ticket.md': tpl } }, { template: 'Templates/Ticket' });
   const f = await p.createNote(T);
+  deepEq(p.app.store.log.filter((l) => l.endsWith(f.path)), ['create ' + f.path, 'fm ' + f.path]);
   eq(p.app.store.data.get(f.path), '# IT-123: Fix the printer\n' + T.url + ' {{nope}}\n');
-  eq(p.app.store.fm.get(f.path).tags, undefined);
+  const fm = p.app.store.fm.get(f.path);
+  eq(fm.tags, 'ticket');
+  eq(fm.topic, 'IT-123');
+  eq(fm.jira_status, 'In Progress');
+  eq(fm.jira_key, 'IT-123');
+  ok(fm.created);
 });
 
-test('createNote falls back to the default body when the template is missing', async () => {
+test('createNote drops template frontmatter that does not parse', async () => {
+  const notices = captureNotices();
+  const tpl = '---\ntitle: {{summary}}\n---\nbody\n';
+  const p = await plugin({ files: { 'Templates/Ticket.md': tpl } }, { template: 'Templates/Ticket' });
+  const f = await p.createNote({ ...T, summary: 'Printer: broken' });
+  eq(p.app.store.data.get(f.path), 'body\n');
+  eq(p.app.store.fm.get(f.path).jira_key, 'IT-123');
+  eq(p.app.store.fm.get(f.path).title, undefined);
+  deepEq(notices, ["The template's frontmatter couldn't be parsed, so it was dropped."]);
+});
+
+test('createNote warns and uses the default body when the template is missing', async () => {
   const notices = captureNotices();
   const p = await plugin({}, { template: 'Templates/Nope.md' });
   const f = await p.createNote(T);
   eq(p.app.store.data.get(f.path), '# IT-123 Fix the printer\n\n');
-  eq(notices.length, 0);
+  deepEq(notices, ['Template not found: Templates/Nope.md. Using the default layout.']);
 });
 
 test('dailyNotePath uses folder and format', () => {
@@ -305,15 +372,14 @@ test('logToDaily notices a missing daily note and respects the toggle', async ()
 
 test('insertInline inserts only the link text at the cursor', async () => {
   const p = await plugin({ files: { 'Tickets/IT-123-x.md': '', 'Daily/d.md': '' }, fm: { 'Tickets/IT-123-x.md': { jira_key: 'IT-123' } } });
-  p.app.workspace.active = p.app.store.files.get('Daily/d.md');
   const ed = fakeEditor();
-  p.insertInline(ed, { ...T, due: '2026-10-20' });
+  p.insertInline(ed, p.app.store.files.get('Daily/d.md'), { ...T, due: '2026-10-20' });
   const line = `[IT-123 Fix the printer](${T.url}) · In Progress · due 2026-10-20 · [[IT-123-x]]`;
   eq(ed.text, line);
   deepEq(ed.cursor, { line: 0, ch: line.length });
   const ed2 = fakeEditor();
   ed2.lineText = '\t  ';
-  p.insertInline(ed2, { ...T, key: 'IT-9' });
+  p.insertInline(ed2, null, { ...T, key: 'IT-9' });
   eq(ed2.text, `[IT-9 Fix the printer](${T.url}) · In Progress`);
 });
 
@@ -357,13 +423,33 @@ test('refreshAll: no notes, errors and missing credentials', async () => {
   const q = await plugin({ files: { 'a.md': '' }, fm: { 'a.md': { jira_key: 'IT-1' } } }, CREDS);
   q.client = () => ({ site: SITE, search: async () => { throw new JiraError('Jira rejected the credentials (check email and API token)', 401); } });
   await q.refreshAll(true);
-  eq(notices[1], 'Jira rejected the credentials (check email and API token)');
+  eq(notices[1], P + 'Jira rejected the credentials (check email and API token)');
   await q.refreshAll(false);
   eq(notices.length, 2);
 
   const r = await plugin({ files: { 'a.md': '' }, fm: { 'a.md': { jira_key: 'IT-1' } } });
   await r.refreshAll(true);
   eq(notices[2], 'Set your Jira site, email and API token in settings');
+});
+
+// Fake element recording createDiv/createEl calls.
+function fakeEl() {
+  const out = [];
+  return {
+    out,
+    createDiv(o) { out.push(['div', o.text]); },
+    createEl(tag, o) { out.push([tag, o.text, o.cls]); },
+  };
+}
+
+test('pickers show status and due on a second line', () => {
+  const picker = new TicketPicker(fakeApp(), [T], (k) => k === 'IT-123', () => {});
+  const el = fakeEl();
+  picker.renderSuggestion({ item: { ...T, due: '2026-10-20' } }, el);
+  deepEq(el.out, [['div', '📝 IT-123 Fix the printer'], ['small', 'In Progress · due 2026-10-20', 'jira-fzf-meta']]);
+  const el2 = fakeEl();
+  picker.renderSuggestion({ item: { ...T, key: 'IT-9', status: '' } }, el2);
+  deepEq(el2.out, [['div', 'IT-9 Fix the printer']]);
 });
 
 test('TicketPicker text marks tickets that have a note', () => {
@@ -391,7 +477,18 @@ test('open-ticket-note shows Jira errors and opens no picker', async () => {
   p.client = () => ({ site: SITE, search: async () => { throw new JiraError("Can't reach Jira", 0); } });
   const picker = await capture(TicketPicker, () => p.commands.find((x) => x.id === 'open-ticket-note').callback());
   eq(picker, undefined);
-  deepEq(notices, ["Can't reach Jira"]);
+  deepEq(notices, ['Loading Jira tickets…', P + "Can't reach Jira"]);
+});
+
+test('open-ticket-note shows a loading notice while fetching, then hides it', async () => {
+  stub.Notice.all = [];
+  const p = await plugin({}, CREDS);
+  let during;
+  p.client = () => fakeClient({ search: () => { during = stub.Notice.all.map((n) => [n.message, n.timeout, n.hidden]); return []; } });
+  await capture(TicketPicker, () => p.commands.find((x) => x.id === 'open-ticket-note').callback());
+  deepEq(during, [['Loading Jira tickets…', 0, false]]);
+  eq(stub.Notice.all[0].hidden, true);
+  stub.Notice.all = undefined;
 });
 
 test('insert-ticket-inline inserts into the editor captured at command time', async () => {
@@ -401,6 +498,20 @@ test('insert-ticket-inline inserts into the editor captured at command time', as
   const picker = await capture(TicketPicker, () => p.commands.find((x) => x.id === 'insert-ticket-inline').editorCallback(ed, {}));
   await picker.onChooseItem(T);
   ok(ed.text.startsWith('[IT-123 Fix the printer]'));
+});
+
+test('insert-ticket-inline links the note relative to view.file, not the active file', async () => {
+  const p = await plugin({ files: { 'Tickets/IT-123-x.md': '', 'Logs/d.md': '', 'Other/o.md': '' }, fm: { 'Tickets/IT-123-x.md': { jira_key: 'IT-123' } } }, CREDS);
+  p.client = () => fakeClient({ search: () => [issue('IT-123')] });
+  const sources = [];
+  p.app.fileManager.generateMarkdownLink = (f, src) => { sources.push(src); return '[[' + f.basename + ']]'; };
+  const view = { file: p.app.store.files.get('Logs/d.md') };
+  const ed = fakeEditor();
+  const picker = await capture(TicketPicker, () => p.commands.find((x) => x.id === 'insert-ticket-inline').editorCallback(ed, view));
+  p.app.workspace.active = p.app.store.files.get('Other/o.md');
+  await picker.onChooseItem(T);
+  deepEq(sources, ['Logs/d.md']);
+  ok(ed.text.endsWith(' · [[IT-123-x]]'), ed.text);
 });
 
 test('open-ticket-in-jira is available only when the note has jira_url', async () => {
@@ -438,9 +549,9 @@ test('search modal: short queries, keys, text and errors', async () => {
   deepEq(c.calls.pop(), ['search', 'text ~ "printer \\"x\\"" ORDER BY updated DESC', { maxResults: 20, cap: 20 }]);
   deepEq(await m.getSuggestions('boom'), []);
   eq(m.emptyStateText, 'Bad JQL');
-  const el = { setText(s) { this.text = s; } };
+  const el = fakeEl();
   m.renderSuggestion(T, el);
-  eq(el.text, '📝 IT-123 Fix the printer · In Progress');
+  deepEq(el.out, [['div', '📝 IT-123 Fix the printer'], ['small', 'In Progress', 'jira-fzf-meta']]);
 });
 
 test('search modal: superseded calls resolve to the newest results', async () => {

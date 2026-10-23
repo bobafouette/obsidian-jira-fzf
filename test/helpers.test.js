@@ -46,6 +46,17 @@ test('noteFileName sanitises the separator', () => {
   eq(noteFileName('IT-1', 'a b', '_/'), 'IT-1_a_b');
 });
 
+test('noteFileName adds a collision suffix with the separator', () => {
+  eq(noteFileName('IT-1', 'Fix the printer', '-', 2), 'IT-1-fix-the-printer-2');
+  eq(noteFileName('IT-1', 'Fix the printer', '_', 3), 'IT-1_fix_the_printer_3');
+  eq(noteFileName('IT-1', 'Fix the printer', '', 2), 'IT-1 fix the printer 2');
+  eq(noteFileName('IT-1', 'Fix the printer', '/', 2), 'IT-1 fix the printer 2');
+  eq(noteFileName('IT-1', '', '-', 2), 'IT-1-2');
+  const long = noteFileName('IT-1', 'word '.repeat(60), '-', 12);
+  ok(long.length <= 100, long);
+  ok(long.endsWith('-12') && !long.endsWith('--12'), long);
+});
+
 test('keys and JQL', () => {
   ok(isIssueKey('IT-123') && isIssueKey('it-1') && isIssueKey('A1_B-9'));
   ok(!isIssueKey('IT123') && !isIssueKey('IT-') && !isIssueKey('I T-1'));

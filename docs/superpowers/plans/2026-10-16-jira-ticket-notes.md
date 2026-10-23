@@ -1,5 +1,7 @@
 # Ticket Note Bridge Implementation Plan
 
+> **Historical (v0.1.0).** Corrected where it drifted from the code: inline lines are plain text, collisions use `-2`, templates keep their frontmatter (v0.2.0), and the plugin is now named "Jira fzf". The README is the current reference.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A read-only Obsidian plugin that opens or creates notes for Jira Cloud tickets, inserts inline ticket links, refreshes ticket facts into note properties, and logs new ticket notes in the daily note; installable through BRAT.
@@ -43,7 +45,7 @@
 | `test/load-plugin.js` | loads `main.js` with the stub, exports `_test` |
 | `test/helpers.test.js` | naming, JQL, mapping, diff, markdown helpers |
 | `test/client.test.js` | `authHeader`, `paginate`, `JiraClient`, `fetchTickets` |
-| `test/plugin.test.js` | plugin loads and registers the six commands |
+| `test/plugin.test.js` | plugin with an in-memory fake app: commands, ribbon, notes, templates, refresh, daily log, settings |
 | `scripts/check.js` | syntax, mobile safety, read-only, manifest, secrets |
 | `scripts/bump-version.js` | optional version bump |
 | `.github/workflows/ci.yml`, `release.yml` | CI and BRAT release |
@@ -159,10 +161,10 @@ const fm = { 'a.md': { jira_key: 'it-1' }, 'b.md': { jira_key: 'IT-1' }, 'c.md':
 const idx = indexNotes(files, (f) => fm[f.path]);
 deepEq(idx.get('IT-1').map((f) => f.path), ['a.md', 'b.md']); eq(idx.size, 1);
 // inlineLine
-eq(inlineLine(T, null), '- [IT-123 Fix the printer](https://x.atlassian.net/browse/IT-123) · In Progress');
+eq(inlineLine(T, null), '[IT-123 Fix the printer](https://x.atlassian.net/browse/IT-123) · In Progress');
 eq(inlineLine({ ...T, due: '2026-10-20' }, '[[IT-123-fix-the-printer]]'),
-   '- [IT-123 Fix the printer](https://x.atlassian.net/browse/IT-123) · In Progress · due 2026-10-20 · [[IT-123-fix-the-printer]]');
-ok(inlineLine({ ...T, summary: 'Fix [prod] now' }, null).startsWith('- [IT-123 Fix \\[prod\\] now]('));
+   '[IT-123 Fix the printer](https://x.atlassian.net/browse/IT-123) · In Progress · due 2026-10-20 · [[IT-123-fix-the-printer]]');
+ok(inlineLine({ ...T, summary: 'Fix [prod] now' }, null).startsWith('[IT-123 Fix \\[prod\\] now]('));
 // insertUnderHeading
 eq(insertUnderHeading('', '## Tickets', '- l'), '## Tickets\n- l\n');
 eq(insertUnderHeading('# Day\n\ntext\n', '## Tickets', '- l'), '# Day\n\ntext\n\n## Tickets\n- l\n');
@@ -284,7 +286,7 @@ ok(allCalls.every((c) => c.method === 'GET'));
     - `getSuggestions(q)` returns a Promise. Under 2 characters → `[]`. Waits 300 ms; a call superseded by a newer one resolves to the newest results.
     - A query matching `isIssueKey` → `client.issue`; otherwise `client.search(textSearchJql(q), { maxResults: 20, cap: 20 })`.
     - A `JiraError` is shown as the empty-state text.
-  - Plugin methods: `client(quiet = false) -> JiraClient|null` (returns `null` when site, email or token is missing; shows "Set your Jira site, email and API token in settings" unless `quiet`), `notesIndex() -> Map`, `openOrCreate(t: Ticket)`, `createNote(t) -> TFile`, `logToDaily(file)`, `insertInline(editor, t)`, `refreshAll(verbose: boolean)`.
+  - Plugin methods: `client(quiet = false) -> JiraClient|null` (returns `null` when site, email or token is missing; shows "Set your Jira site, email and API token in settings" unless `quiet`), `notesIndex() -> Map`, `openOrCreate(t: Ticket)`, `createNote(t) -> TFile`, `logToDaily(file)`, `insertInline(editor, file, t)`, `refreshAll(verbose: boolean)`.
 
 - [ ] **Step 1: Write the failing test** — extend `test/plugin.test.js`:
 
@@ -317,17 +319,16 @@ The stub `Notice` constructor pushes its message to `Notice.log` when it is an a
   - `openOrCreate(t)`: the first indexed file for `t.key`, else `createNote` then `logToDaily`; then open it with `workspace.getLeaf(false).openFile(file)`.
   - `createNote(t)`:
     1. Create the folder if it is missing.
-    2. Name the file with `noteFileName(t.key, t.summary, sep)`; on a collision, append ` 2`, ` 3`, ….
-    3. Body: `stripFrontmatter(renderTemplate(templateText, t))` if a template is set and exists, else `defaultBody(t)`.
+    2. Name the file with `noteFileName(t.key, t.summary, sep)`; on a collision, `noteFileName(t.key, t.summary, sep, n)` appends `-2`, `-3`, ….
+    3. Body: `renderTemplate(templateText, t)` if a template is set and exists (its frontmatter is kept and merged in step 4; if it doesn't parse it is stripped), else `defaultBody(t)` with a notice when the template is missing.
     4. Write the frontmatter with `processFrontMatter`: `noteProps(t)` plus `created: moment().format('YYYY-MM-DD HH:mm')`.
   - `logToDaily(file)`:
     - Skip unless `logToDaily` is on.
     - The daily path comes from `internalPlugins.getPluginById('daily-notes').instance.options` (`folder`, `format`, default `YYYY-MM-DD`).
     - If today's note doesn't exist, show the notice "Today's daily note doesn't exist yet, so this wasn't logged."
     - Otherwise `vault.process` inserts ``- ${HH:mm} ${generateMarkdownLink(file, daily.path)}`` with `insertUnderHeading`, unless the link is already present.
-  - `insertInline(editor, t)`:
-    1. Insert `inlineLine(t, noteLink)`, where `noteLink` is a markdown link from the active file to the ticket's note, if one exists.
-    2. Add a newline, then `\t- `.
+  - `insertInline(editor, file, t)`:
+    1. Insert `inlineLine(t, noteLink)` as plain text (no list marker, no child bullet), where `noteLink` is a markdown link from `file` (the editor's `view.file`) to the ticket's note, if one exists.
     3. Place the cursor at the end.
   - `refreshAll(verbose)`:
     1. `index = notesIndex()`, then `fetchTickets(client, [...index.keys()])`.
