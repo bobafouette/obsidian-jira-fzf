@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Repository checks for Ticket Note Bridge. Dependency-free, CommonJS, Node 22.
+// Repository checks for Jira fzf. Dependency-free, CommonJS, Node 22.
 // Usage: node scripts/check.js   (exits 1 if any check fails)
 'use strict';
 

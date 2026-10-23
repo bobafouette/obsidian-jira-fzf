@@ -1,6 +1,6 @@
 {
   "id": "ticket-note-bridge",
-  "name": "Ticket Note Bridge",
+  "name": "Jira fzf",
   "version": "0.1.0",
   "minAppVersion": "1.4.0",
   "description": "Open a Jira ticket as an Obsidian note on demand, link it inline, and log the work in your daily note. Read-only: never writes to Jira.",
