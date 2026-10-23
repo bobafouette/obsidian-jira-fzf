@@ -7,6 +7,7 @@ const {
 const CATEGORY = { new: 'todo', indeterminate: 'in progress', done: 'done' };
 const NAME_FORBIDDEN = /[\\/:*?"<>|#^[\]]/g;
 const NAME_MAX = 100;
+const PLUGIN_NAME = 'Jira fzf';
 
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -23,7 +24,9 @@ function normalizeSite(s) {
   }
 }
 
-function noteFileName(key, summary, sep) {
+// `n` (2, 3, ...) adds a collision suffix joined with the separator, kept
+// within NAME_MAX so the number is never cut off.
+function noteFileName(key, summary, sep, n) {
   const clean = String(sep == null ? '' : sep).replace(NAME_FORBIDDEN, '');
   const s = clean.trim() ? clean : ' ';
   const sepRe = escapeRegExp(s);
@@ -34,16 +37,18 @@ function noteFileName(key, summary, sep) {
     .replace(new RegExp('^' + junk + '+'), '')
     .replace(new RegExp(junk + '+$'), '');
   const k = String(key || '').toUpperCase();
+  const suffix = n ? s + n : '';
+  const max = NAME_MAX - suffix.length;
   let name = part ? k + s + part : k;
-  if (name.length > NAME_MAX) {
+  if (name.length > max) {
     let cut = '';
     for (const ch of name) {
-      if (cut.length + ch.length > NAME_MAX) break;
+      if (cut.length + ch.length > max) break;
       cut += ch;
     }
     name = cut;
   }
-  return name.replace(new RegExp(junk + '+$'), '');
+  return name.replace(new RegExp(junk + '+$'), '') + suffix;
 }
 
 function isIssueKey(s) {
@@ -344,6 +349,20 @@ function ticketLabel(t, hasNote) {
   return (hasNote ? '📝 ' : '') + t.key + ' ' + t.summary + (t.status ? ' · ' + t.status : '');
 }
 
+// Second picker line: status and due date.
+function ticketMeta(t) {
+  const parts = [];
+  if (t.status) parts.push(t.status);
+  if (t.due) parts.push('due ' + t.due);
+  return parts.join(' · ');
+}
+
+function renderTicket(el, t, hasNote) {
+  el.createDiv({ text: (hasNote ? '📝 ' : '') + t.key + ' ' + t.summary });
+  const meta = ticketMeta(t);
+  if (meta) el.createEl('small', { text: meta, cls: 'jira-fzf-meta' });
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Fuzzy picker over a fixed list of tickets (the "my tickets" JQL results).
@@ -361,8 +380,13 @@ class TicketPicker extends FuzzySuggestModal {
     return this.tickets;
   }
 
+  // Matched by the fuzzy search: key, summary and status.
   getItemText(t) {
     return ticketLabel(t, this.hasNote(t.key));
+  }
+
+  renderSuggestion(match, el) {
+    renderTicket(el, match.item, this.hasNote(match.item.key));
   }
 
   onChooseItem(t) {
@@ -419,7 +443,7 @@ class TicketSearchModal extends SuggestModal {
   }
 
   renderSuggestion(t, el) {
-    el.setText(ticketLabel(t, this.index.has(String(t.key).toUpperCase())));
+    renderTicket(el, t, this.index.has(String(t.key).toUpperCase()));
   }
 
   onChooseSuggestion(t) {
@@ -444,12 +468,12 @@ class TicketNoteBridge extends Plugin {
     this.addCommand({
       id: 'insert-ticket-inline',
       name: 'Insert ticket inline (my tickets)',
-      editorCallback: (editor) => this.pickMine((t) => this.insertInline(editor, t)),
+      editorCallback: (editor, view) => this.pickMine((t) => this.insertInline(editor, view && view.file, t)),
     });
     this.addCommand({
       id: 'insert-ticket-inline-search',
       name: 'Insert ticket inline (search)',
-      editorCallback: (editor) => this.pickSearch((t) => this.insertInline(editor, t)),
+      editorCallback: (editor, view) => this.pickSearch((t) => this.insertInline(editor, view && view.file, t)),
     });
     this.addCommand({
       id: 'open-ticket-in-jira',
@@ -469,6 +493,7 @@ class TicketNoteBridge extends Plugin {
       callback: () => this.refreshAll(true),
     });
 
+    this.addRibbonIcon('ticket', 'Open ticket note (my tickets)', () => this.pickMine((t) => this.openOrCreate(t)));
     this.addSettingTab(new BridgeSettingTab(this.app, this));
 
     this.app.workspace.onLayoutReady(() => {
@@ -501,6 +526,12 @@ class TicketNoteBridge extends Plugin {
     return new JiraClient({ site, email, token });
   }
 
+  // Errors: logged to the console and shown longer, prefixed with the plugin name.
+  fail(e) {
+    console.error('[' + PLUGIN_NAME + ']', e);
+    new Notice(PLUGIN_NAME + ': ' + errorMessage(e), 8000);
+  }
+
   frontmatter(file) {
     const cache = this.app.metadataCache.getFileCache(file);
     return cache && cache.frontmatter;
@@ -519,12 +550,15 @@ class TicketNoteBridge extends Plugin {
   async pickMine(action) {
     const client = this.client();
     if (!client) return;
+    const loading = new Notice('Loading Jira tickets…', 0);
     let issues;
     try {
       issues = await client.search(this.settings.jql || DEFAULT_JQL);
     } catch (e) {
-      new Notice(errorMessage(e));
+      this.fail(e);
       return;
+    } finally {
+      loading.hide();
     }
     const tickets = issues.map((i) => mapIssue(i, client.site));
     const index = this.notesIndex();
@@ -545,12 +579,12 @@ class TicketNoteBridge extends Plugin {
         try {
           await this.logToDaily(file);
         } catch (e) {
-          new Notice(errorMessage(e));
+          this.fail(e);
         }
       }
       await this.app.workspace.getLeaf(false).openFile(file);
     } catch (e) {
-      new Notice(errorMessage(e));
+      this.fail(e);
     }
   }
 
@@ -561,20 +595,33 @@ class TicketNoteBridge extends Plugin {
     const prefix = folder && folder !== '/' ? folder + '/' : '';
     const base = prefix + noteFileName(t.key, t.summary, this.settings.fileNameSeparator);
     let path = normalizePath(base + '.md');
-    for (let n = 2; vault.getAbstractFileByPath(path); n++) path = normalizePath(base + ' ' + n + '.md');
+    for (let n = 2; vault.getAbstractFileByPath(path); n++) {
+      path = normalizePath(prefix + noteFileName(t.key, t.summary, this.settings.fileNameSeparator, n) + '.md');
+    }
 
     let body = defaultBody(t);
     const tplName = String(this.settings.template || '').trim();
     if (tplName) {
       const tplPath = normalizePath(/\.md$/i.test(tplName) ? tplName : tplName + '.md');
       const tpl = vault.getAbstractFileByPath(tplPath);
-      if (tpl instanceof TFile) body = stripFrontmatter(renderTemplate(await vault.read(tpl), t));
+      if (tpl instanceof TFile) body = renderTemplate(await vault.read(tpl), t);
+      else new Notice('Template not found: ' + tplPath + '. Using the default layout.');
     }
 
+    // The template's own frontmatter is kept; the plugin's keys are merged in
+    // (and win on a name clash).
     const file = await vault.create(path, body);
-    await fileManager.processFrontMatter(file, (fm) => {
-      Object.assign(fm, noteProps(t), { created: moment().format('YYYY-MM-DD HH:mm') });
-    });
+    const props = Object.assign(noteProps(t), { created: moment().format('YYYY-MM-DD HH:mm') });
+    const merge = () => fileManager.processFrontMatter(file, (fm) => { Object.assign(fm, props); });
+    try {
+      await merge();
+    } catch (e) {
+      // Unparseable template frontmatter (e.g. a summary with ": " in it): drop it and retry.
+      if (stripFrontmatter(body) === body) throw e;
+      await vault.process(file, stripFrontmatter);
+      await merge();
+      new Notice("The template's frontmatter couldn't be parsed, so it was dropped.");
+    }
     return file;
   }
 
@@ -600,10 +647,10 @@ class TicketNoteBridge extends Plugin {
       (sectionContains(data, heading, link) ? data : insertUnderHeading(data, heading, line)));
   }
 
-  insertInline(editor, t) {
+  // `file` is the editor's file, taken when the command ran.
+  insertInline(editor, file, t) {
     const note = this.noteFor(t.key);
-    const active = this.app.workspace.getActiveFile();
-    const link = note ? this.app.fileManager.generateMarkdownLink(note, active ? active.path : '') : '';
+    const link = note ? this.app.fileManager.generateMarkdownLink(note, file ? file.path : '') : '';
     editor.replaceSelection(inlineLine(t, link));
     if (typeof editor.focus === 'function') editor.focus();
   }
@@ -620,7 +667,7 @@ class TicketNoteBridge extends Plugin {
     try {
       result = await fetchTickets(client, [...index.keys()]);
     } catch (e) {
-      if (verbose) new Notice(errorMessage(e));
+      if (verbose) this.fail(e);
       return;
     }
     let total = 0;
@@ -634,7 +681,7 @@ class TicketNoteBridge extends Plugin {
           await this.app.fileManager.processFrontMatter(file, (fm) => { Object.assign(fm, diff); });
           changed++;
         } catch (e) {
-          if (verbose) new Notice(file.path + ': ' + errorMessage(e));
+          if (verbose) this.fail(new Error(file.path + ': ' + errorMessage(e)));
         }
       }
     };
@@ -685,7 +732,7 @@ class BridgeSettingTab extends PluginSettingTab {
           const me = await client.myself();
           new Notice(me && me.displayName ? 'Connected as ' + me.displayName : BAD_RESPONSE);
         } catch (e) {
-          new Notice(errorMessage(e));
+          plugin.fail(e);
         }
       }));
     new Setting(containerEl)
@@ -706,9 +753,9 @@ class BridgeSettingTab extends PluginSettingTab {
   }
 }
 TicketNoteBridge._test = {
-  CATEGORY, normalizeSite, noteFileName, isIssueKey, escapeJqlString, textSearchJql, keysJql, chunk,
+  PLUGIN_NAME, CATEGORY, normalizeSite, noteFileName, isIssueKey, escapeJqlString, textSearchJql, keysJql, chunk,
   mapIssue, noteProps, propsDiff, indexNotes, inlineLine, insertUnderHeading,
-  renderTemplate, stripFrontmatter, defaultBody, dailyNotePath, sectionContains,
+  ticketMeta, renderTemplate, stripFrontmatter, defaultBody, dailyNotePath, sectionContains,
   FIELDS, authHeader, JiraError, paginate, JiraClient, fetchTickets,
   DEFAULTS, TicketPicker, TicketSearchModal, BridgeSettingTab,
 };

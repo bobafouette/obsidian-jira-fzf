@@ -5,6 +5,11 @@
 class Plugin {
   constructor(app, manifest) { this.app = app; this.manifest = manifest; }
   addCommand(cmd) { (this.commands = this.commands || []).push(cmd); }
+  addRibbonIcon(icon, title, callback) {
+    const el = { icon, title, callback };
+    (this.ribbon = this.ribbon || []).push(el);
+    return el;
+  }
   addSettingTab() {}
   registerEvent() {}
   async loadData() { return {}; }
@@ -45,10 +50,14 @@ class Setting {
 
 // Pushes every message to Notice.log when a test sets it to an array.
 class Notice {
-  constructor(message) {
+  constructor(message, timeout) {
     this.message = message;
+    this.timeout = timeout;
+    this.hidden = false;
     if (Array.isArray(Notice.log)) Notice.log.push(message);
+    if (Array.isArray(Notice.all)) Notice.all.push(this);
   }
+  hide() { this.hidden = true; }
 }
 
 class Modal {

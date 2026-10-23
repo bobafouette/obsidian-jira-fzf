@@ -1,1 +1,2 @@
-/* Ticket Note Bridge styles. */
+/* Jira fzf styles. */
+.jira-fzf-meta { display: block; color: var(--text-muted); font-size: var(--font-ui-smaller); }
