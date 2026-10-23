@@ -1,6 +1,6 @@
 # Ticket Note Bridge (obsidian-jira-fzf) — design
 
-Date: 2026-10-16
+Date: 2026-10-16 (corrected for v0.2.0: the plugin is now named "Jira fzf"; see README for current behaviour)
 Repository: `obsidian-jira-fzf` (public, new)
 
 ## Purpose
@@ -61,7 +61,7 @@ no-build-step constraint).
 
 ## Plugin identity
 
-- `id`: `ticket-note-bridge`, `name`: Ticket Note Bridge
+- `id`: `ticket-note-bridge`, `name`: Jira fzf (originally Ticket Note Bridge)
 - `author`: `bobafouette` (GitHub handle); `authorUrl`: `https://github.com/bobafouette`.
   No other personal details anywhere in the repository.
 - BRAT install path in the README: `bobafouette/obsidian-jira-fzf`.
@@ -95,12 +95,12 @@ the only lookup; renaming or moving a note needs no handling.
      separator, separators collapsed, leading/trailing dots and separators stripped. Empty separator keeps
      spaces (`IT-123 fix the printer`). Total base name capped at 100 characters.
    - If the path already exists (a non-ticket note with that name), append
-     ` 2`, ` 3`, …
+     the separator and a number (`-2`, `-3`, …), within the 100-character cap.
    - Folder is created if missing.
    - Frontmatter (see Note properties) + body from the template, or the default
      body `# <KEY> <summary>\n\n`.
 3. Log `- HH:mm [[<note basename>]]` under the daily heading in today's daily
-   note, once per note per day (skip if a line linking that note is already
+   note, once per note (skip if a line linking that note is already
    under the heading). Skip if logging is disabled or today's note doesn't exist.
    Logging happens only when the note is created; opening an existing note from
    the picker does not log it.
@@ -108,16 +108,16 @@ the only lookup; renaming or moving a note needs no handling.
 ### Inline line
 
 ```
-- [IT-123 Fix the printer](https://site.atlassian.net/browse/IT-123) · In Progress · [[IT-123-fix-the-printer]]
-	- |
+[IT-123 Fix the printer](https://site.atlassian.net/browse/IT-123) · In Progress · [[IT-123-fix-the-printer]]
 ```
+
+- Inserted at the cursor as plain text: no list marker, no child bullet.
 
 - Status is the status name. Due date, when set, is appended as `· due 2026-10-20`
   before the note link.
 - The note link segment appears only if a note exists.
 - `[`, `]` in the summary are escaped with a backslash so the markdown link holds.
-- The child bullet is indented with the editor's indent (tab by default) and the
-  cursor is placed after `- `.
+- The note link is relative to the editor's file (`view.file`) at command time.
 - Inline lines are snapshots; they are not refreshed.
 
 ## Jira API usage
@@ -187,7 +187,9 @@ The file is never renamed when the summary changes.
 Optional vault path to a template note. Placeholders `{{key}}`, `{{summary}}`,
 `{{url}}`, `{{status}}`, `{{priority}}`, `{{due}}` are replaced; unknown
 `{{…}}` and inherited-key names (e.g. `{{constructor}}`) are left untouched.
-The template's own frontmatter, if any, is dropped (the plugin writes its own).
+The template's own frontmatter is kept and the plugin's keys are merged into it
+with `processFrontMatter` (plugin keys win on a clash). If it doesn't parse, it is
+dropped with a notice. A missing template file shows a notice and uses the default body.
 
 ## Settings
 
@@ -212,13 +214,16 @@ The template's own frontmatter, if any, is dropped (the plugin writes its own).
 - Other non-2xx → notice with Jira's `errorMessages` joined, or the HTTP status.
 - Network failure → notice "Can't reach Jira".
 - Startup refresh never shows a notice.
+- Errors from Jira or the vault go through `fail()`: logged with `console.error` and shown
+  as an 8-second notice prefixed "Jira fzf: ".
 
 ## Code layout (`main.js`)
 
 - Pure helpers (exported via `TicketNoteBridge._test`): `normalizeSite`,
-  `authHeader`, `sanitizeName`, `noteFileName`, `escapeJqlString`, `searchJql`,
-  `isIssueKey`, `chunk`, `mapIssue`, `noteProps`, `propsDiff`, `inlineLine`,
-  `insertUnderHeading`, `renderTemplate`, `defaultBody`, `paginate(fetchPage)`.
+  `authHeader`, `noteFileName`, `escapeJqlString`, `textSearchJql`, `keysJql`,
+  `isIssueKey`, `chunk`, `mapIssue`, `noteProps`, `propsDiff`, `indexNotes`, `inlineLine`,
+  `insertUnderHeading`, `renderTemplate`, `stripFrontmatter`, `defaultBody`,
+  `dailyNotePath`, `sectionContains`, `ticketMeta`, `paginate(fetchPage)`, `fetchTickets`.
 - `JiraClient` (thin): `get(path, params)`, `search(jql, opts)`, `issue(key)`,
   `myself()`. Takes a `request` function (defaults to `requestUrl`) so tests
   can inject a fake. Only implements GET.
@@ -273,6 +278,7 @@ scripts/check.js
 styles.css
 test/helpers.test.js
 test/client.test.js
+test/plugin.test.js   # plugin with an in-memory fake app: commands, notes, refresh, daily log
 test/load-plugin.js
 test/obsidian-stub.js
 versions.json
