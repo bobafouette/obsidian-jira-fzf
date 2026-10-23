@@ -96,7 +96,7 @@ node scripts/check.js
 node --test 'test/*.test.js'
 ```
 
-`check.js` covers syntax, mobile safety, the read-only rule (no non-GET method in `main.js`), manifest/`versions.json` consistency and secrets.
+`check.js` covers syntax, mobile safety, the read-only rule (no non-GET method in `main.js`), manifest/`versions.json` consistency and secrets (Jira tokens and personal email addresses).
 
 ## Releasing
 
