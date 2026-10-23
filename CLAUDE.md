@@ -1,4 +1,4 @@
-# Ticket Note Bridge — project context
+# Jira fzf (id `ticket-note-bridge`) — project context
 
 ## Why this exists
 For people who track work in Jira Cloud and think in Obsidian. They want to reach a
@@ -12,17 +12,25 @@ dedicated note when it needs thought, with the ticket's facts kept current.
   is `GET`. No comments, field edits, transitions, `obsidian://` back-links. A test and
   `scripts/check.js` enforce it (no `method: 'POST'|'PUT'|'DELETE'|'PATCH'` in `main.js`).
 
-## What the plugin does (v0.1.0)
+## What the plugin does (v0.2.0)
 - **Open ticket note** (my tickets / search): picker, then open or create
   `<folder>/<KEY>-<sanitized lower-case summary>.md` with frontmatter `jira_key`, `jira_url`,
   `jira_summary`, `jira_status`, `jira_status_category`, `jira_priority`, `due`, `created`.
   On creation only, logs `- HH:mm [[note]]` under a heading in today's daily note (once per note).
+  Name collisions append the separator and a number (`…-2`). A "Loading Jira tickets…" notice shows
+  while "my tickets" is fetched; pickers show status and due on a second line.
+  The ribbon icon (`ticket`) runs "Open ticket note (my tickets)".
+- Templates: placeholders `{{key}} {{summary}} {{url}} {{status}} {{priority}} {{due}}`. The template's
+  frontmatter is kept and the plugin's keys are merged in via `processFrontMatter` (plugin keys win;
+  unparseable template frontmatter is dropped with a notice). A missing template shows a notice.
 - **Insert ticket inline** (my tickets / search): `[KEY summary](url) · status · due … · [[note]]`
-  at the cursor, as plain text (no list marker, no child bullet).
+  at the cursor, as plain text (no list marker, no child bullet). The note link is relative to the
+  editor's `view.file`, taken at command time.
 - **Open this note's ticket in Jira**.
 - **Refresh all ticket notes**: also on startup (silent). Writes only when values change.
   Missing tickets get `jira_status: missing`; moved tickets get the new key and URL.
 - Notes are found by scanning the metadata cache for `jira_key`; nothing is stored in Jira.
+- Errors go through `fail()`: `console.error` plus an 8 s notice prefixed "Jira fzf: ".
 
 ## Technical constraints
 - Plain CommonJS JavaScript in a single `main.js`, no build step, no `package.json`, no dependencies.
