@@ -32,6 +32,19 @@ dedicated note when it needs thought, with the ticket's facts kept current.
 - Notes are found by scanning the metadata cache for `jira_key`; nothing is stored in Jira.
 - Errors go through `fail()`: `console.error` plus an 8 s notice prefixed "Jira fzf: ".
 
+## Family (shared with the other fzf plugins)
+This plugin belongs to a family of sibling plugins (`obsidian-jira-fzf`, `obsidian-todoist-fzf`, …)
+started from `bobafouette/obsidian-fzf-template`, whose `GUIDELINES.md` sets the shared conventions.
+- **Shared files** (keep identical across the family): `.github/workflows/ci.yml`,
+  `.github/workflows/release.yml`, `scripts/bump-version.js`, and `scripts/check.js` except its
+  per-plugin settings block (`SERVICE`, `READ_ONLY`, `TOKEN_PATTERNS`).
+- **Change them in the template first**, then copy the change into each plugin (same commit
+  message), so the plugins never drift apart. Don't fix a shared file in one plugin only.
+- A convention change (commands, notes, frontmatter, daily log, refresh, errors) goes into
+  `GUIDELINES.md` first too. This plugin's released ids and frontmatter keys never change.
+- `test/obsidian-stub.js` and `test/load-plugin.js` started from the template but are owned by
+  this plugin: extend them freely.
+
 ## Technical constraints
 - Plain CommonJS JavaScript in a single `main.js`, no build step, no `package.json`, no dependencies.
 - Mobile-safe: network only via `requestUrl`; no `require` other than `obsidian`, no
@@ -47,8 +60,8 @@ dedicated note when it needs thought, with the ticket's facts kept current.
 ## Tests, CI, release
 - Pure helpers and `JiraClient` are unit-tested with a stubbed `obsidian` module
   (`test/`): `node --test 'test/*.test.js'` (Node built-ins only).
-- `node scripts/check.js`: syntax, mobile safety, read-only check, manifest/versions.json
-  consistency, secrets.
+- `node scripts/check.js`: syntax, mobile safety, read-only check (`READ_ONLY = true`),
+  manifest/versions.json consistency, secrets (Jira tokens).
 - CI (`.github/workflows/ci.yml`) runs both on push and PR.
 - Pushing a tag `X.Y.Z` (no `v`) or publishing a GitHub release runs `release.yml`, which writes
   the version into manifest.json/versions.json and attaches main.js, manifest.json, styles.css
